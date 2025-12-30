@@ -8,7 +8,7 @@ import pandas as pd
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import zipfile
-from gspread_dataframe import set_with_dataframe # Import para upload de DataFrame
+from gspread_dataframe import set_with_dataframe
 
 DOWNLOAD_DIR = "/tmp/shopee_automation"
 
@@ -30,13 +30,6 @@ def rename_downloaded_file(download_dir, download_path):
 def unzip_and_process_data(zip_path, extract_to_dir):
     """
     Unzips a file, merges all CSVs, and processes the data according to the specified logic.
-    
-    Args:
-        zip_path (str): The full path to the .zip file.
-        extract_to_dir (str): The directory to extract files to.
-
-    Returns:
-        pd.DataFrame: A fully processed pandas DataFrame, or None if an error occurs.
     """
     try:
         unzip_folder = os.path.join(extract_to_dir, "extracted_files")
@@ -60,6 +53,15 @@ def unzip_and_process_data(zip_path, extract_to_dir):
         # === INÍCIO DA LÓGICA DE PROCESSAMENTO INTEGRADA ===
         print("Iniciando processamento dos dados...")
         
+        # --- NOVO FILTRO ADICIONADO AQUI ---
+        # Filtra a coluna de índice 12 (13ª coluna) para manter apenas 'SoC_SP_Cravinhos'
+        # Usamos iloc[:, 12] para pegar todas as linhas da coluna na posição 12
+        print("Aplicando filtro: SoC_SP_Cravinhos...")
+        if not df_final.empty:
+            df_final = df_final[df_final.iloc[:, 12] == "SoC_SP_Cravinhos"]
+            print(f"Linhas restantes após filtro: {len(df_final)}")
+        # -----------------------------------
+
         # 1. Selecionar colunas desejadas pela posição
         colunas_desejadas = [0, 9, 15, 17, 2, 23]
         df_selecionado = df_final.iloc[:, colunas_desejadas].copy()
@@ -97,26 +99,23 @@ def unzip_and_process_data(zip_path, extract_to_dir):
         print(f"Erro ao descompactar ou processar os dados: {e}")
         return None
 
-
 def update_google_sheet_with_dataframe(df_to_upload):
     """Updates a Google Sheet with the content of a pandas DataFrame."""
     if df_to_upload is None or df_to_upload.empty:
-        print("Nenhum dado para enviar ao Google Sheets.")
+        print("Nenhum dado para enviar ao Google Sheets (DataFrame vazio ou None).")
         return
         
     try:
         print("Enviando dados processados para o Google Sheets...")
         scope = ["https://spreadsheets.google.com/feeds", 'https://www.googleapis.com/auth/spreadsheets', "https://www.googleapis.com/auth/drive"]
-        # ATENÇÃO: Use o caminho correto para seu arquivo de credenciais JSON
         creds = ServiceAccountCredentials.from_json_keyfile_name("hxh.json", scope)
         client = gspread.authorize(creds)
         
-        # ATENÇÃO: Use o nome correto da sua planilha e da aba
         planilha = client.open("Stage Out Management - SP5 - SPX")
         aba = planilha.worksheet("Packed")
         
-        aba.clear() # Limpa a aba antes de inserir novos dados
-        set_with_dataframe(aba, df_to_upload) # Usa a função para enviar o DataFrame
+        aba.clear() 
+        set_with_dataframe(aba, df_to_upload) 
         
         print("✅ Dados enviados para o Google Sheets com sucesso!")
         time.sleep(5)
@@ -147,16 +146,12 @@ async def main():
               # NAVEGAÇÃO E DOWNLOAD
             await page.goto("https://spx.shopee.com.br/#/general-to-management")
             await page.wait_for_timeout(8000)
-            #await page.locator('xpath=/html/body/div[1]/div/div[x2]/div[2]/div/div/div/div[1]/div[1]/div[8]/div/span/span/span/span/button').click()
             await page.get_by_role('button', name='Exportar').click()
             await page.wait_for_timeout(8000)
             await page.locator('xpath=/html[1]/body[1]/span[4]/div[1]/div[1]/div[1]').click()
-            #await page.get_by_role("button", name="Exportar").nth(1).click()
             await page.wait_for_timeout(8000)
-            #await page.locator('xpath=/html[1]/body[1]/div[3]/div[2]/div[1]/div[2]/form[1]/div[1]/div[1]/div[1]/div[1]/div[1]/div[2]/div[1]/div[3]/div[1]/div[1]/label[1]/span[1]/input[1]').click()
             await page.get_by_role("treeitem", name="Packed", exact=True).click()
             await page.wait_for_timeout(8000)
-            #await page.locator('xpath=/html/body/div[3]/div[2]/div/div[3]/span/button[2]').click()
             await page.get_by_role("button", name="Confirmar").click()
             await page.wait_for_timeout(90000)
             
@@ -173,10 +168,7 @@ async def main():
             renamed_zip_path = rename_downloaded_file(DOWNLOAD_DIR, download_path)
             
             if renamed_zip_path:
-                # 1. Descompacta e processa os dados em memória, retornando um DataFrame
                 final_dataframe = unzip_and_process_data(renamed_zip_path, DOWNLOAD_DIR)
-                
-                # 2. Faz o upload do DataFrame final para o Google Sheets
                 update_google_sheet_with_dataframe(final_dataframe)
 
         except Exception as e:
