@@ -6,13 +6,17 @@ import os
 import shutil
 import pandas as pd
 import gspread
-# SUBSTITUÍDO: oauth2client (obsoleto) por google.oauth2 (moderno)
 from google.oauth2.service_account import Credentials 
 import zipfile
 import gc
-import traceback # Para ver o erro real
+import traceback
 
 DOWNLOAD_DIR = "/tmp/shopee_automation"
+
+# === COLOQUE O ID DA SUA PLANILHA ABAIXO ===
+# Exemplo: SPREADSHEET_ID = "1BxiMVs0XRA5nFMdKvBdBZjgmUWqnzv-al6M6lZJ"
+SPREADSHEET_ID = "1hoXYiyuArtbd2pxMECteTFSE75LdgvA2Vlb6gPpGJ-g" 
+# ===========================================
 
 def rename_downloaded_file(download_dir, download_path):
     """Renames the downloaded file to include the current hour."""
@@ -93,28 +97,34 @@ def update_google_sheet_with_dataframe(df_to_upload):
     try:
         print(f"Preparando envio de {len(df_to_upload)} linhas para o Google Sheets...")
         
-        # --- AUTENTICAÇÃO MODERNA (Google Auth) ---
+        # --- AUTENTICAÇÃO MODERNA ---
         scope = [
             "https://spreadsheets.google.com/feeds",
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive"
         ]
         
-        # Verifica se o arquivo existe antes de tentar carregar
         if not os.path.exists("hxh.json"):
-            raise FileNotFoundError("O arquivo 'hxh.json' não foi encontrado no diretório atual.")
+            raise FileNotFoundError("O arquivo 'hxh.json' não foi encontrado.")
 
         creds = Credentials.from_service_account_file("hxh.json", scopes=scope)
         client = gspread.authorize(creds)
         
-        planilha = client.open("Stage Out Management - SP5 - SPX")
+        # --- MUDANÇA AQUI: Abrir pelo ID é muito mais seguro ---
+        print(f"Abrindo planilha pelo ID: {SPREADSHEET_ID}...")
+        try:
+            planilha = client.open_by_key(SPREADSHEET_ID)
+        except gspread.exceptions.APIError as api_err:
+            print("❌ Erro de permissão! Verifique se o email do arquivo 'hxh.json' está compartilhado na planilha.")
+            raise api_err
+
         aba = planilha.worksheet("Packed")
         
         # 1. Limpar a aba
         print("Limpando a aba 'Packed'...")
         aba.clear() 
         
-        # 2. Enviar Cabeçalho (Manualmente, sem usar gspread_dataframe)
+        # 2. Enviar Cabeçalho
         headers = df_to_upload.columns.tolist()
         aba.append_rows([headers], value_input_option='USER_ENTERED')
         
@@ -122,7 +132,7 @@ def update_google_sheet_with_dataframe(df_to_upload):
         df_to_upload = df_to_upload.fillna('')
         dados_lista = df_to_upload.values.tolist()
         
-        chunk_size = 2000 # Reduzi um pouco por segurança
+        chunk_size = 2000
         total_chunks = (len(dados_lista) // chunk_size) + 1
         
         print(f"Iniciando upload de {len(dados_lista)} registros em {total_chunks} lotes...")
@@ -139,21 +149,21 @@ def update_google_sheet_with_dataframe(df_to_upload):
     except Exception as e:
         print("❌ ERRO CRÍTICO NO UPLOAD:")
         print(f"Mensagem de erro: {str(e)}")
-        print("Traceback completo:")
-        traceback.print_exc() # Isso vai mostrar EXATAMENTE onde o código quebrou
+        traceback.print_exc()
 
 async def main():
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
     async with async_playwright() as p:
-        # Configuração do browser para evitar detecção e melhorar performance
+        # Mantive os parâmetros de segurança e pop-up que funcionaram no código anterior
         browser = await p.chromium.launch(
             headless=False, 
-            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
+            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--window-size=1920,1080"]
         )
-        context = await browser.new_context(accept_downloads=True)
+        context = await browser.new_context(accept_downloads=True, viewport={"width": 1920, "height": 1080})
         page = await context.new_page()
         try:
-            # LOGIN
+            # === LOGIN ===
+            print("Realizando login...")
             await page.goto("https://spx.shopee.com.br/")
             await page.wait_for_selector('xpath=//*[@placeholder="Ops ID"]', timeout=15000)
             await page.locator('xpath=//*[@placeholder="Ops ID"]').fill('Ops71223')
@@ -168,32 +178,42 @@ async def main():
             except:
                 pass
             
-            # NAVEGAÇÃO
+            # === NAVEGAÇÃO E EXPORTAÇÃO ===
+            print("Navegando...")
             await page.goto("https://spx.shopee.com.br/#/general-to-management")
             await page.wait_for_timeout(8000)
             
-            # Exportar
-            await page.get_by_role('button', name='Exportar').click()
+            # Tratamento de Pop-up extra antes de exportar
+            try:
+                if await page.locator('.ssc-dialog-wrapper').is_visible():
+                     await page.keyboard.press("Escape")
+                     await page.wait_for_timeout(1000)
+            except:
+                pass
+
+            print("Exportando...")
+            await page.get_by_role('button', name='Exportar').click(force=True)
             await page.wait_for_timeout(5000)
-            await page.locator('xpath=/html[1]/body[1]/span[4]/div[1]/div[1]/div[1]').click()
+            await page.locator('xpath=/html[1]/body[1]/span[4]/div[1]/div[1]/div[1]').click(force=True)
             await page.wait_for_timeout(5000)
-            await page.get_by_role("treeitem", name="Packed", exact=True).click()
+            await page.get_by_role("treeitem", name="Packed", exact=True).click(force=True)
             await page.wait_for_timeout(5000)
-            await page.get_by_role("button", name="Confirmar").click()
+            await page.get_by_role("button", name="Confirmar").click(force=True)
             
-            # Espera estendida para geração do relatório
+            print("Aguardando geração do relatório...")
             await page.wait_for_timeout(60000) 
             
-            # DOWNLOAD
+            # === DOWNLOAD ===
+            print("Baixando...")
             async with page.expect_download(timeout=120000) as download_info:
-                await page.get_by_role("button", name="Baixar").first.click()
+                await page.get_by_role("button", name="Baixar").first.click(force=True)
             
             download = await download_info.value
             download_path = os.path.join(DOWNLOAD_DIR, download.suggested_filename)
             await download.save_as(download_path)
             print(f"Download concluído: {download_path}")
 
-            # PROCESSAMENTO
+            # === PROCESSAMENTO ===
             renamed_zip_path = rename_downloaded_file(DOWNLOAD_DIR, download_path)
             
             if renamed_zip_path:
