@@ -9,6 +9,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import zipfile
 from gspread_dataframe import set_with_dataframe
+import gc  # Garbage Collector para limpeza de memória
 
 DOWNLOAD_DIR = "/tmp/shopee_automation"
 
@@ -53,9 +54,7 @@ def unzip_and_process_data(zip_path, extract_to_dir):
         # === INÍCIO DA LÓGICA DE PROCESSAMENTO INTEGRADA ===
         print("Iniciando processamento dos dados...")
         
-        # --- NOVO FILTRO ADICIONADO AQUI ---
-        # Filtra a coluna de índice 12 (13ª coluna) para manter apenas 'SoC_SP_Cravinhos'
-        # Usamos iloc[:, 12] para pegar todas as linhas da coluna na posição 12
+        # --- FILTRO SoC_SP_Cravinhos ---
         print("Aplicando filtro: SoC_SP_Cravinhos...")
         if not df_final.empty:
             df_final = df_final[df_final.iloc[:, 12] == "SoC_SP_Cravinhos"]
@@ -100,13 +99,13 @@ def unzip_and_process_data(zip_path, extract_to_dir):
         return None
 
 def update_google_sheet_with_dataframe(df_to_upload):
-    """Updates a Google Sheet with the content of a pandas DataFrame."""
+    """Updates a Google Sheet with the content of a pandas DataFrame in chunks."""
     if df_to_upload is None or df_to_upload.empty:
         print("Nenhum dado para enviar ao Google Sheets (DataFrame vazio ou None).")
         return
         
     try:
-        print("Enviando dados processados para o Google Sheets...")
+        print(f"Preparando envio de {len(df_to_upload)} linhas para o Google Sheets...")
         scope = ["https://spreadsheets.google.com/feeds", 'https://www.googleapis.com/auth/spreadsheets', "https://www.googleapis.com/auth/drive"]
         creds = ServiceAccountCredentials.from_json_keyfile_name("hxh.json", scope)
         client = gspread.authorize(creds)
@@ -114,8 +113,26 @@ def update_google_sheet_with_dataframe(df_to_upload):
         planilha = client.open("Stage Out Management - SP5 - SPX")
         aba = planilha.worksheet("Packed")
         
+        # 1. Limpar a aba
         aba.clear() 
-        set_with_dataframe(aba, df_to_upload) 
+        
+        # 2. Enviar apenas o cabeçalho primeiro
+        set_with_dataframe(aba, df_to_upload.head(0))
+        
+        # 3. Preparar dados (substituir NaN por string vazia para evitar erro JSON)
+        df_to_upload = df_to_upload.fillna('')
+        dados_lista = df_to_upload.values.tolist()
+        
+        chunk_size = 5000  # Tamanho do lote seguro
+        total_chunks = (len(dados_lista) // chunk_size) + 1
+        
+        print(f"Iniciando upload em {total_chunks} lotes...")
+
+        for i in range(0, len(dados_lista), chunk_size):
+            chunk = dados_lista[i:i + chunk_size]
+            aba.append_rows(chunk, value_input_option='USER_ENTERED')
+            print(f"Lote {i//chunk_size + 1}/{total_chunks} enviado ({len(chunk)} linhas).")
+            time.sleep(2) # Pausa para respeitar limite da API
         
         print("✅ Dados enviados para o Google Sheets com sucesso!")
         time.sleep(5)
@@ -170,6 +187,11 @@ async def main():
             if renamed_zip_path:
                 final_dataframe = unzip_and_process_data(renamed_zip_path, DOWNLOAD_DIR)
                 update_google_sheet_with_dataframe(final_dataframe)
+                
+                # Limpeza forçada de memória
+                if final_dataframe is not None:
+                    del final_dataframe
+                    gc.collect()
 
         except Exception as e:
             print(f"Erro durante o processo principal: {e}")
