@@ -4,3 +4,5 @@ pandas
 gspread
 oauth2client
 gspread-dataframe
+google-auth
+openpyxl
